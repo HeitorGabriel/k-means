@@ -1,0 +1,279 @@
+---
+title: "K-means Clustering"
+author: "Heitor Gabriel S. Monteiro"
+date: "02/11/2021"
+geometry: margin=1in
+fontfamily: mathpazo
+fontsize: 12pt
+output:
+  html_document:
+    highlight: tango
+    theme: cerulean
+    number_sections: yes
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: no
+  pdf_document:
+    toc: true
+    number_sections: true
+    highlight: tango
+always_allow_html: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Prelúdio
+
+Nosso objetivo é formar um classificador de grupos de interesse baseado em [dados](https://github.com/stedy/Machine-Learning-with-R-datasets/blob/master/snsdata.csv) do número de vezes que certas palavras apareceram em publicações de jovens norte-americanos, em uma determinada rede social. Para essa tarefa, vamos usar o [Tidyverse](https://www.tidyverse.org/) e o [Tidymodels](https://www.tidymodels.org/) para importar, tratar os dados, visualizá-los e aplicar o modelo do algoritmo [K-Means](https://en.wikipedia.org/wiki/K-means_clustering). Esse exercício é muito útil, por exemplo, se quisermos determinar precisamente o perfil de interesse para uma propaganda direcionada e personalizada para cada subgrupo.
+
+```{r, message=FALSE, warning=FALSE}
+setwd('/home/heitor/Área de Trabalho/R Projects/Análise Macro/Labs/Lab 12')
+
+library(tidyverse)
+library(plotly)
+library(tidymodels)
+library(knitr)
+library(rmarkdown)
+
+aa <- read_csv("snsdata.csv") %>% as_tibble()
+attach(aa)
+```
+
+# Importação e Tratamento
+
+Ao ver os gráficos pela primeira vez, vemos que uma quantidade grande de dados têm a idade faltante além de observações que reportam idades absurdas. Além de uma predominância feminina e observações sem categorização do gênero.
+
+```{r, message=FALSE, warning=FALSE}
+aa %>% summary()
+
+aa <- aa %>% mutate(gender = factor(gender))
+aa$gender %>% summary()
+aa$gender %>% table() %>% 
+	prop.table() %>% 
+  round(digits = 4)
+```
+
+Para não retirar a grande quantidade de `NA` em `gender` e `age`, criaremos uma variável binária para feminino/não-feminino e outra para gênero conhecido e desconhecido. Quem for, por exemplo, homem, será então não-feminino e gênero conhecido.
+
+```{r, message=FALSE, warning=FALSE}
+aa <- aa %>% 
+	mutate( female =
+				case_when(gender=='M'   ~ 0,
+						  is.na(gender) ~ 0,
+						  gender=='F'   ~ 1),
+			unk_gender =
+				case_when(is.na(gender) ~ 1,
+						  gender=='M'   ~ 0,
+						  gender=='F'   ~ 0))
+```
+
+Vemos que as quantidades de `female` e `unk_gender` batem com os números anteriores de `age` para `F` e para `NA`.
+
+```{r, message=FALSE, warning=FALSE}
+sum(aa$female==1)
+sum(aa$unk_gender==1)
+
+aa$age <- replace(aa$age,
+				  aa$age<=13|aa$age>20,
+				  NA)
+summary(aa$age)
+```
+
+Para contornar o problema das idades faltantes sem deletar as observações, aplicaremos a idade média de cada ano de conclusão da *high school*. A função `agregate()` aplica determinada função, no caso: `mean`, em `age`, mas dividindo-o em subgrupos de acordo com `gradyear`. A função `ave()` aplica a média em cada observação do vetor `age`, restando ao `if_else()` aplicar na observação com `NA` e devolver o vetor transformado ao nosso banco de dados `aa`.
+
+```{r, message=FALSE, warning=FALSE}
+aggregate(data = aa,
+		  age ~ gradyear,
+		  mean, na.rm = TRUE)
+
+ave_age <- ave(age, gradyear,
+			   FUN = function(x) mean(x, na.rm = TRUE))
+
+aa$age <- if_else(is.na(age), ave_age, aa$age)
+summary(aa$age)
+```
+
+Já que nossas variáveis são a frequência de menção a cada assunto, em cada observação, ganharemos mais informação se compararmos essa tal frequência ao número médio de frequências daquele tópico: o quanto cada usuário citou o tópico relativo aos demais. Portanto aplicaremos a função `scale` para tranformar `aa` em `cc`; sem mexer nas variáveis `c(gradyear, gender, female, unk_gender)`.  
+
+```{r}
+bb <- aa %>% select(! c(gradyear, gender,
+						age, female, unk_gender))
+
+bb <- as.data.frame(
+	lapply(bb, scale))
+
+cc <- cbind(bb,
+			'gradyear'   = aa$gradyear,
+			'gender'     = aa$gender,
+			'female'     = aa$female,
+			'unk_gender' = aa$unk_gender)
+rm(bb)
+```
+
+# Visualizações e Descrições
+
+Vamos entender melhor os tópicos mais abortados por gênero, para exemplificação.
+
+```{r}
+a2 <- aa %>% 
+	select(! c(age, female, unk_gender, gradyear)) %>% 
+	group_by(gender) %>% 
+	summarise( across(.cols = 4:37,
+					  .fns = sum))%>%
+	pivot_longer(cols = soccer:drugs,
+				 names_to = 'Interests') %>% 
+	pivot_wider(names_from = gender,
+				values_from = value)
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+gg5 <- a2 %>%
+	select(Interests, M) %>% 
+	arrange(desc(M)) %>% 
+	slice_head(n = 15) %>%
+	ggplot(aes(x=reorder(Interests, -M),
+			   y=M)) +
+	geom_col(fill = 'tomato3')+
+	theme(axis.text.x =
+		  	element_text(angle = 45,
+		  				 vjust = 0.8))
+ggplotly(gg5)
+```
+
+```{r, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+gg6 <- a2 %>%
+	select(Interests, `F`) %>% 
+	arrange(desc(`F`)) %>% 
+	slice_head(n = 15) %>%
+	ggplot(aes(x=reorder(Interests, -`F`),
+			   y=`F`)) +
+	geom_col(fill = 'tomato')+
+	theme(axis.text.x =
+		  	element_text(angle = 45,
+		  				 vjust = 0.8))
+ggplotly(gg6)
+```
+
+Podemos também, com a base escalonada, observar se há discrepâncias na sitação de determinados tópicos entre os sexos, por exemplo:
+
+```{r}
+cc %>% 
+	dplyr::group_by(gender) %>% 
+	dplyr::summarise(mean_music = mean(music, na.rm=T),
+					 mean_god = mean(god, na.rm=T),
+					 mean_die = mean(die, na.rm=T),
+					 mean_rock = mean(rock, na.rm=T),
+					 mean_sex = mean(sex, na.rm=T)) %>% 
+  kable()
+```
+
+# O Modelo
+
+A regra de bolso é escolhermos o número de grupos de acordo com $\sqrt{\frac{n}{2}}$. 
+
+```{r}
+set.seed(123)
+sqrt(nrow(cc)/2)
+```
+
+Vamos treinar modelos de 1 até 20 clasificações por conta do custo de processamento computacional. É super recomendado conhecer o [Broom](https://broom.tidymodels.org/), ferramenta que nos ajuda a manipular os resultados e informações do modelo. A função `tidy()` resume em um nível por cluster, `augment()` adiciona as classificações de cada observação ao conjunto de dados original e a função `relance()` extrai um resumo em uma única linha. 
+
+```{r, message=FALSE, warning=FALSE}
+kclusts <- 
+	tibble(k = 1:20) %>%
+	mutate(
+		kclust = map(k,
+					 ~kmeans(dplyr::select(cc, -gender),
+					 		.x)),
+		tidied = map(kclust, tidy),
+		glanced = map(kclust, glance),
+		augmented = map(kclust,
+						augment,
+						dplyr::select(cc, -gender)))
+
+km_clusters <- 
+	kclusts %>%
+	unnest(cols = c(tidied))
+
+km_assignments <- 
+	kclusts %>% 
+	unnest(cols = c(augmented))
+
+km_clusterings <- 
+	kclusts %>%
+	unnest(cols = c(glanced))
+```
+
+Vemos que o ganho marginal de especificação de clusters ainda é alto:
+
+```{r, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+km_clusterings %>% 
+	ggplot(aes(k, tot.withinss)) +
+	geom_line(alpha = 0.5,
+			  size = 1.2,
+			  color = "midnightblue") +
+	geom_point(size = 2,
+			   color = "midnightblue")
+```
+
+Asseguir, podemos ter uma ideia de como estão organizadas os grupos de dois a dois especificadores, vamos lembrar que o agrupamento é feito com 39 variáveis:
+
+```{r, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=6}
+gg7 <- km_assignments %>% 
+	ggplot(aes(x = volleyball, y = basketball)) +
+	geom_point(aes(color = .cluster), alpha = 0.3) + 
+	facet_wrap(~ k)
+
+gg7
+```
+
+Como, no nosso exemplo de aplicação em uma situação real, os gastos de marketing para mais de 20 propagandas específicas seria muito alta, vamos supor que o departamento de *marketing* tem orçamento para 5 propagandas específicas, então vamos separar esses cinco grupos de usuários:
+
+```{r}
+km05 <- kmeans(dplyr::select(cc, -gender),
+			   centers = 5)
+
+summary(km05)
+paged_table(broom::tidy(km05))
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.align='center', fig.width=9, fig.height=4}
+ggplotly(
+  broom::augment(km05, cc) %>% 
+	ggplot(aes(die, jesus,
+			   color=.cluster))+
+	geom_point())
+```
+
+
+
+
+
+
+# Referências:
+
+   - [*Machine Learning with R Expert techniques for predictive modeling, 3rd Edition by Brett Lantz*](https://github.com/PacktPublishing/Machine-Learning-with-R-Third-Edition)
+   
+  - [*Getting started with k-means and employment status. TidyTuesday with Julia Silge*](https://juliasilge.com/blog/kmeans-employment/)
+  
+  - [*K-means clustering with tidy data principles*](https://www.tidymodels.org/learn/statistics/k-means/)
+
+  - [*Análise Macro*](https://analisemacro.com.br/cursos/econometria/machine-learning-usando-o-r/)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
